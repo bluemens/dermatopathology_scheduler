@@ -10,6 +10,12 @@ from datetime import date, datetime
 from enum import Enum
 
 
+class HalfDayPeriod(Enum):
+    """Enumeration of half-day periods."""
+    MORNING = "morning"
+    AFTERNOON = "afternoon"
+
+
 class RoleCategory(Enum):
     """Categories for grouping roles by type."""
     PATHOLOGY = "pathology"
@@ -495,9 +501,10 @@ class SchedulingInput:
 
 @dataclass
 class ScheduleAssignment:
-    """Represents a single assignment of a physician to a role on a specific day."""
+    """Represents a single assignment of a physician to a role on a specific day and half-day period."""
     physician: Physician
     day: date
+    half_day_period: HalfDayPeriod
     role: Role
 
 
@@ -511,6 +518,10 @@ class Schedule:
         """Get all assignments for a specific day."""
         return [a for a in self.assignments if a.day == day]
     
+    def get_assignments_for_day_period(self, day: date, period: HalfDayPeriod) -> List[ScheduleAssignment]:
+        """Get all assignments for a specific day and half-day period."""
+        return [a for a in self.assignments if a.day == day and a.half_day_period == period]
+    
     def get_assignments_for_physician(self, physician: Physician) -> List[ScheduleAssignment]:
         """Get all assignments for a specific physician."""
         return [a for a in self.assignments if a.physician == physician]
@@ -521,4 +532,8 @@ class Schedule:
     
     def get_coverage_for_day_role(self, day: date, role: Role) -> List[Physician]:
         """Get all physicians assigned to a specific role on a specific day."""
-        return [a.physician for a in self.assignments if a.day == day and a.role == role] 
+        return [a.physician for a in self.assignments if a.day == day and a.role == role]
+    
+    def get_coverage_for_day_period_role(self, day: date, period: HalfDayPeriod, role: Role) -> List[Physician]:
+        """Get all physicians assigned to a specific role on a specific day and half-day period."""
+        return [a.physician for a in self.assignments if a.day == day and a.half_day_period == period and a.role == role] 
