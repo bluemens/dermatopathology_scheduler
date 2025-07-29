@@ -8,7 +8,8 @@ that will be applied to the OR-Tools model.
 from typing import Dict, List, Any
 from ortools.sat.python import cp_model
 from .data_models import (
-    Physician, Role, RoleCategory, SchedulingInput, CoverageRequirement, HalfDayPeriod
+    Physician, Role, RoleCategory, SchedulingInput, CoverageRequirement, HalfDayPeriod,
+    RoleRequirement, RolePreference
 )
 
 
@@ -507,6 +508,122 @@ class ConstraintBuilder:
         
         print("Annual target constraints added successfully.")
     
+    def add_role_requirement_constraints(self) -> None:
+        """
+        Add constraints for weekly role requirements.
+        
+        This constraint ensures that each physician meets their weekly role requirements.
+        For example, a physician might need to work at least 2 half-days of IMF per week.
+        """
+        print("Adding role requirement constraints...")
+        
+        for physician in self.input_data.physicians:
+            if not physician.role_requirements:
+                continue
+                
+            print(f"  Physician {physician.name}:")
+            
+            for requirement in physician.role_requirements:
+                # Create variables for this role across all days and periods
+                role_vars = []
+                for day in self.input_data.calendar_days:
+                    day_str = day.strftime('%Y-%m-%d')
+                    for period in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON]:
+                        var_name = f"{physician.name}_{day_str}_{period.value}_{requirement.role.value}"
+                        if var_name in self.variables:
+                            role_vars.append(self.variables[var_name])
+                
+                if role_vars:
+                    # Constraint: At least the required frequency of this role per week
+                    # Convert to integer units (half-days * 2)
+                    required_frequency = requirement.frequency * 2
+                    self.model.Add(sum(role_vars) >= required_frequency)
+                    print(f"    {requirement.role.value}: At least {requirement.frequency} half-days per week ({required_frequency} units)")
+        
+        print("Role requirement constraints added successfully.")
+    
+    def add_role_preference_constraints(self) -> None:
+        """
+        Add constraints for weekly role preferences.
+        
+        This constraint adds soft constraints for physician role preferences.
+        These preferences are added to the objective function as penalties
+        when not satisfied, rather than as hard constraints.
+        """
+        print("Adding role preference constraints...")
+        
+        # Store preference penalties for objective function
+        self.preference_penalties = []
+        
+        for physician in self.input_data.physicians:
+            if not physician.role_preferences:
+                continue
+                
+            print(f"  Physician {physician.name}:")
+            
+            for preference in physician.role_preferences:
+                # Create variables for this role across all days and periods
+                role_vars = []
+                for day in self.input_data.calendar_days:
+                    day_str = day.strftime('%Y-%m-%d')
+                    for period in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON]:
+                        var_name = f"{physician.name}_{day_str}_{period.value}_{preference.role.value}"
+                        if var_name in self.variables:
+                            role_vars.append(self.variables[var_name])
+                
+                if role_vars:
+                    # Create a penalty variable for this preference
+                    penalty_var = self.model.NewIntVar(0, 1000, f"{physician.name}_{preference.role.value}_penalty")
+                    
+                    # Constraint: Penalty = max(0, required_frequency - actual_frequency)
+                    # Convert to integer units (half-days * 2)
+                    required_frequency = preference.frequency * 2
+                    actual_frequency = sum(role_vars)
+                    
+                    # If actual_frequency < required_frequency, penalty = required_frequency - actual_frequency
+                    # Otherwise, penalty = 0
+                    self.model.Add(penalty_var >= required_frequency - actual_frequency)
+                    self.model.Add(penalty_var >= 0)
+                    
+                    # Store penalty with weight for objective function
+                    self.preference_penalties.append((penalty_var, preference.weight))
+                    
+                    print(f"    {preference.role.value}: Prefer at least {preference.frequency} half-days per week (weight: {preference.weight})")
+        
+        print("Role preference constraints added successfully.")
+    
+    def create_objective_function(self) -> None:
+        """
+        Create the objective function that minimizes preference violations.
+        
+        This function creates an objective that minimizes the weighted sum of
+        preference penalties, making the solver prefer solutions that satisfy
+        physician preferences.
+        """
+        if not hasattr(self, 'preference_penalties') or not self.preference_penalties:
+            print("No preference penalties to minimize.")
+            return
+        
+        print("Creating objective function with preference penalties...")
+        
+        # Create weighted penalty terms
+        weighted_penalties = []
+        for penalty_var, weight in self.preference_penalties:
+            # Scale penalty by weight (0.0 to 1.0)
+            weighted_penalty = penalty_var * int(weight * 100)  # Convert to integer
+            weighted_penalties.append(weighted_penalty)
+        
+        if weighted_penalties:
+            # Create objective variable
+            objective = self.model.NewIntVar(0, 1000000, 'objective')
+            self.model.Add(objective == sum(weighted_penalties))
+            self.model.Minimize(objective)
+            
+            print(f"  Created objective function with {len(weighted_penalties)} preference penalties")
+            print(f"  Total penalty terms: {len(self.preference_penalties)}")
+        else:
+            print("  No preference penalties to minimize")
+    
     def add_role_category_constraints(self) -> None:
         """
         Add constraints for role categories.
@@ -591,6 +708,9 @@ class ConstraintBuilder:
         self.add_sdo_constraints()
         self.add_coverage_constraints()
         self.add_annual_target_constraints()
+        self.add_role_requirement_constraints()
+        self.add_role_preference_constraints()
+        self.create_objective_function() # Call the new method here
         self.add_role_category_constraints()
         self.add_workload_balancing_constraints()
         self.add_consecutive_day_constraints()

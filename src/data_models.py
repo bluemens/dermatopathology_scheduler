@@ -25,6 +25,39 @@ class RoleCategory(Enum):
     TIME_OFF = "time_off"
 
 
+@dataclass
+class RoleRequirement:
+    """Represents a required role assignment with frequency."""
+    role: Role
+    frequency: int  # Number of half-days per week
+    period: str = "week"  # Time period (default: week)
+    
+    def __post_init__(self):
+        """Validate role requirement data."""
+        if self.frequency < 0:
+            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
+        if self.period != "week":
+            raise ValueError(f"Period must be 'week', got {self.period}")
+
+
+@dataclass
+class RolePreference:
+    """Represents a preferred role assignment with frequency and weight."""
+    role: Role
+    frequency: int  # Number of half-days per week
+    weight: float  # Preference weight (0.0 to 1.0)
+    period: str = "week"  # Time period (default: week)
+    
+    def __post_init__(self):
+        """Validate role preference data."""
+        if self.frequency < 0:
+            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
+        if not 0.0 <= self.weight <= 1.0:
+            raise ValueError(f"Weight must be between 0.0 and 1.0, got {self.weight}")
+        if self.period != "week":
+            raise ValueError(f"Period must be 'week', got {self.period}")
+
+
 class Role(Enum):
     """Enumeration of assignable roles for physicians."""
     ADMIN = "admin"
@@ -119,6 +152,8 @@ class Physician:
     preferred_days_off: Set[date]
     unavailable_dates: Set[date]  # Dates when physician cannot work
     annual_targets: Dict[Role, AnnualTarget]  # Annual targets for each role
+    role_requirements: List[RoleRequirement] = None  # Required role assignments per week
+    role_preferences: List[RolePreference] = None  # Preferred role assignments per week
     
     def __post_init__(self):
         """Validate physician data after initialization."""
@@ -187,7 +222,9 @@ class Physician:
                                             vacation_category: VacationCategory,
                                             preferred_days_off: Set[date] = None,
                                             unavailable_dates: Set[date] = None,
-                                            annual_targets: Dict[Role, AnnualTarget] = None) -> 'Physician':
+                                            annual_targets: Dict[Role, AnnualTarget] = None,
+                                            role_requirements: List[RoleRequirement] = None,
+                                            role_preferences: List[RolePreference] = None) -> 'Physician':
         """
         Create a Physician instance with automatic calculation of all derived values.
         
@@ -231,7 +268,9 @@ class Physician:
             effective_clinical_fte_percentage=effective_clinical_fte,
             preferred_days_off=preferred_days_off or set(),
             unavailable_dates=unavailable_dates or set(),
-            annual_targets=annual_targets or {}
+            annual_targets=annual_targets or {},
+            role_requirements=role_requirements or [],
+            role_preferences=role_preferences or []
         )
         
         # Calculate all derived values using the property functions
@@ -265,7 +304,9 @@ class Physician:
             effective_clinical_fte_percentage=effective_clinical_fte,
             preferred_days_off=preferred_days_off or set(),
             unavailable_dates=unavailable_dates or set(),
-            annual_targets=annual_targets or {}
+            annual_targets=annual_targets or {},
+            role_requirements=role_requirements or [],
+            role_preferences=role_preferences or []
         )
         
         # Generate annual targets if not provided
@@ -464,6 +505,36 @@ class Physician:
         """Get total target days for a specific role category."""
         roles = self.get_roles_by_category(category)
         return sum(self.annual_targets.get(role, AnnualTarget(role, 0)).target_days for role in roles)
+    
+    def get_role_requirement(self, role: Role) -> Optional[RoleRequirement]:
+        """Get role requirement for a specific role."""
+        for requirement in self.role_requirements:
+            if requirement.role == role:
+                return requirement
+        return None
+    
+    def get_role_preference(self, role: Role) -> Optional[RolePreference]:
+        """Get role preference for a specific role."""
+        for preference in self.role_preferences:
+            if preference.role == role:
+                return preference
+        return None
+    
+    def has_role_requirement(self, role: Role) -> bool:
+        """Check if physician has a requirement for a specific role."""
+        return self.get_role_requirement(role) is not None
+    
+    def has_role_preference(self, role: Role) -> bool:
+        """Check if physician has a preference for a specific role."""
+        return self.get_role_preference(role) is not None
+    
+    def get_weekly_requirements(self) -> Dict[Role, int]:
+        """Get all weekly role requirements as a dictionary."""
+        return {req.role: req.frequency for req in self.role_requirements}
+    
+    def get_weekly_preferences(self) -> Dict[Role, tuple]:
+        """Get all weekly role preferences as a dictionary of (frequency, weight) tuples."""
+        return {pref.role: (pref.frequency, pref.weight) for pref in self.role_preferences}
 
 
 @dataclass
