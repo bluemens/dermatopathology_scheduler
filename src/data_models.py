@@ -25,39 +25,6 @@ class RoleCategory(Enum):
     TIME_OFF = "time_off"
 
 
-@dataclass
-class RoleRequirement:
-    """Represents a required role assignment with frequency."""
-    role: Role
-    frequency: int  # Number of half-days per week
-    period: str = "week"  # Time period (default: week)
-    
-    def __post_init__(self):
-        """Validate role requirement data."""
-        if self.frequency < 0:
-            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
-        if self.period != "week":
-            raise ValueError(f"Period must be 'week', got {self.period}")
-
-
-@dataclass
-class RolePreference:
-    """Represents a preferred role assignment with frequency and weight."""
-    role: Role
-    frequency: int  # Number of half-days per week
-    weight: float  # Preference weight (0.0 to 1.0)
-    period: str = "week"  # Time period (default: week)
-    
-    def __post_init__(self):
-        """Validate role preference data."""
-        if self.frequency < 0:
-            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
-        if not 0.0 <= self.weight <= 1.0:
-            raise ValueError(f"Weight must be between 0.0 and 1.0, got {self.weight}")
-        if self.period != "week":
-            raise ValueError(f"Period must be 'week', got {self.period}")
-
-
 class Role(Enum):
     """Enumeration of assignable roles for physicians."""
     ADMIN = "admin"
@@ -107,6 +74,39 @@ class Role(Enum):
     def get_roles_by_category(cls, category: RoleCategory) -> List['Role']:
         """Get all roles in a specific category."""
         return [role for role in cls if role.category == category]
+
+
+@dataclass
+class RoleRequirement:
+    """Represents a required role assignment with frequency."""
+    role: Role
+    frequency: int  # Number of half-days per week
+    period: str = "week"  # Time period (default: week)
+    
+    def __post_init__(self):
+        """Validate role requirement data."""
+        if self.frequency < 0:
+            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
+        if self.period != "week":
+            raise ValueError(f"Period must be 'week', got {self.period}")
+
+
+@dataclass
+class RolePreference:
+    """Represents a preferred role assignment with frequency and weight."""
+    role: Role
+    frequency: int  # Number of half-days per week
+    weight: float  # Preference weight (0.0 to 1.0)
+    period: str = "week"  # Time period (default: week)
+    
+    def __post_init__(self):
+        """Validate role preference data."""
+        if self.frequency < 0:
+            raise ValueError(f"Frequency must be non-negative, got {self.frequency}")
+        if not 0.0 <= self.weight <= 1.0:
+            raise ValueError(f"Weight must be between 0.0 and 1.0, got {self.weight}")
+        if self.period != "week":
+            raise ValueError(f"Period must be 'week', got {self.period}")
 
 
 class VacationCategory(Enum):
