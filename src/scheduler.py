@@ -6,12 +6,13 @@ the constraint satisfaction problem for physician scheduling.
 """
 
 import time
+from datetime import date
 from typing import Dict, List, Any, Optional
 from ortools.sat.python import cp_model
 from ortools.sat import cp_model_pb2
 
 from .data_models import (
-    SchedulingInput, Schedule, ScheduleAssignment, Physician, Role
+    SchedulingInput, Schedule, ScheduleAssignment, Physician, Role, HalfDayPeriod
 )
 from .constraints import create_constraint_builder
 from .utils import validate_scheduling_input, print_schedule_summary, calculate_schedule_metrics
@@ -61,14 +62,16 @@ class PhysicianScheduler:
         self.model = cp_model.CpModel()
         
         # Create decision variables
-        # variables[physician_name_day_role] = Boolean variable
+        # variables[physician_name_day_period_role] = Boolean variable
         self.variables = {}
         
         for physician in self.input_data.physicians:
             for day in self.input_data.calendar_days:
-                for role in self.input_data.roles:
-                    var_name = f"{physician.name}_{day.strftime('%Y-%m-%d')}_{role.value}"
-                    self.variables[var_name] = self.model.NewBoolVar(var_name)
+                day_str = day.strftime('%Y-%m-%d')
+                for period in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON]:
+                    for role in self.input_data.roles:
+                        var_name = f"{physician.name}_{day_str}_{period.value}_{role.value}"
+                        self.variables[var_name] = self.model.NewBoolVar(var_name)
         
         print(f"Created {len(self.variables)} decision variables")
     
@@ -89,29 +92,21 @@ class PhysicianScheduler:
         """
         Define the objective function for the optimization problem.
         
-        TODO: Implement a meaningful objective function
-        - Minimize deviation from target workloads
-        - Balance total assignments across physicians
-        - Minimize consecutive day assignments
-        - Consider physician preferences
+        This method uses the ConstraintBuilder's objective function which includes:
+        - Preference violation penalties
+        - Fairness penalties for workload distribution
+        - Spacing rewards for temporal distribution
         """
         if not self.model:
             raise RuntimeError("Model must be created before defining objective")
         
         print("Defining objective function...")
         
-        # TODO: Implement meaningful objective function
-        # For now, create a simple placeholder objective
+        # Use the ConstraintBuilder's objective function
+        constraint_builder = create_constraint_builder(self.model, self.variables, self.input_data)
+        constraint_builder.create_objective_function()
         
-        # Example: Minimize total assignments (placeholder)
-        objective_terms = []
-        for var in self.variables.values():
-            objective_terms.append(var)
-        
-        if objective_terms:
-            self.model.Minimize(sum(objective_terms))
-        
-        print("Objective function defined (placeholder)")
+        print("Objective function defined using ConstraintBuilder")
     
     def solve(self, time_limit: int = 300) -> bool:
         """
@@ -173,22 +168,24 @@ class PhysicianScheduler:
         
         for var_name, var in self.variables.items():
             if self.solver.Value(var) == 1:  # Variable is True in solution
-                # Parse variable name: "physician_name_date_role"
+                # Parse variable name: "physician_name_date_period_role"
                 parts = var_name.split('_')
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     # Handle physician names that might contain underscores
                     role_part = parts[-1]
-                    date_part = parts[-2]
-                    physician_name = '_'.join(parts[:-2])
+                    period_part = parts[-2]
+                    date_part = parts[-3]
+                    physician_name = '_'.join(parts[:-3])
                     
-                    # Find corresponding physician and role
+                    # Find corresponding physician, role, and period
                     physician = next((p for p in self.input_data.physicians if p.name == physician_name), None)
                     role = next((r for r in self.input_data.roles if r.value == role_part), None)
+                    period = next((p for p in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON] if p.value == period_part), None)
                     
-                    if physician and role:
+                    if physician and role and period:
                         try:
                             day = date.fromisoformat(date_part)
-                            assignment = ScheduleAssignment(physician=physician, day=day, role=role)
+                            assignment = ScheduleAssignment(physician=physician, day=day, half_day_period=period, role=role)
                             assignments.append(assignment)
                         except ValueError:
                             print(f"Warning: Could not parse date from variable name: {var_name}")

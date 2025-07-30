@@ -329,7 +329,7 @@ class Physician:
         # Vacation days are based on category, prorated by effective clinical FTE
         # Convert to half-days, calculate, then round to nearest half-day
         base_vacation_days = self.vacation_category.value
-        half_days = base_vacation_days * 2 * self.effective_clinical_fte_percentage
+        half_days = base_vacation_days * 2
         return round(half_days) / 2
     
     @property
@@ -359,7 +359,7 @@ class Physician:
         # Workdays = Institutional Days - Vacation - Trip
         # All calculations done in half-days for precision
         institutional_half_days = 255 * 2 * self.fte_percentage
-        vacation_half_days = self.vacation_category.value * 2 * self.effective_clinical_fte_percentage
+        vacation_half_days = self.vacation_category.value * 2
         trip_half_days = 18 * 2  # Trip days are constant 18 full days = 36 half-days
         
         total_half_days = institutional_half_days - vacation_half_days - trip_half_days
@@ -400,13 +400,17 @@ class Physician:
     
     @property
     def calculated_admin_days(self) -> float:
-        """Calculate Admin days = 255 * 2 * admin_plus_research_fte_percentage."""
-        return 255 * 2 * self.admin_fte_percentage
+        """Calculate Admin days = 255 * admin_fte_percentage."""
+        # Convert to half-days, calculate, then round to nearest half-day
+        half_days = 255 * 2 * self.admin_fte_percentage
+        return round(half_days) / 2
     
     @property 
     def calculated_research_days(self) -> float:
-        """Calculate Research days = 255 * 2 * research_fte_percentage."""
-        return 255 * 2 * self.research_fte_percentage
+        """Calculate Research days = 255 * research_fte_percentage."""
+        # Convert to half-days, calculate, then round to nearest half-day
+        half_days = 255 * 2 * self.research_fte_percentage
+        return round(half_days) / 2
     
     def validate_derived_values(self) -> List[str]:
         """
@@ -458,8 +462,8 @@ class Physician:
         admin_half_days = 255 * 2 * self.admin_fte_percentage
         admin_days = round(admin_half_days) / 2
         
-        # Calculate research days (part of admin+research FTE)
-        research_half_days = 255 * 2 * self.research_fte_percentage  # Assuming 50% of admin+research is research
+        # Calculate research days
+        research_half_days = 255 * 2 * self.research_fte_percentage
         research_days = round(research_half_days) / 2
         
         targets = {

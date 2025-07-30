@@ -140,7 +140,7 @@ class ConstraintBuilder:
                             var_name = f"{physician.name}_{day_str}_{period.value}_{role.value}"
                             if var_name in self.variables:
                                 # Constraint: Physician cannot be assigned to this role on unavailable date
-                                self.model.Add(self.variables[var_name] == 0)
+                                self.model.Add(self.variables[var_name] == False)
         
         print("Unavailability constraints added successfully.")
     
@@ -196,8 +196,10 @@ class ConstraintBuilder:
                 
                 if sdo_vars:
                     # Constraint: Part-time physicians must get their required SDO days
-                    self.model.Add(sum(sdo_vars) == required_sdo_days)
-                    print(f"  Part-time physician {physician.name}: {required_sdo_days} SDO days required")
+                    # Convert to integer (multiply by 2 since we're working with half-days)
+                    required_sdo_half_days = int(required_sdo_days * 2)
+                    self.model.Add(sum(sdo_vars) == required_sdo_half_days)
+                    print(f"  Part-time physician {physician.name}: {required_sdo_days} SDO days ({required_sdo_half_days} half-days) required")
                 
                 # Additional constraint: When SDO is assigned, no other roles can be assigned
                 for day in self.input_data.calendar_days:
@@ -290,21 +292,9 @@ class ConstraintBuilder:
                 self.model.Add(sum(afternoon_dpd_vars) == 1)
                 print(f"  Day {day_str}: Afternoon DPD = 0.5 half-day (1 unit)")
             
-            # 4. Tuesday/Thursday: Afternoon DPD must also include DPWG
-            if day_of_week in [1, 3]:  # Tuesday (1) or Thursday (3)
-                for physician in self.input_data.physicians:
-                    dpd_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPD.value}"
-                    dpwg_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPWG.value}"
-                    
-                    if dpd_var_name in self.variables and dpwg_var_name in self.variables:
-                        dpd_var = self.variables[dpd_var_name]
-                        dpwg_var = self.variables[dpwg_var_name]
-                        
-                        # Constraint: If DPD is assigned, DPWG must also be assigned (same physician)
-                        self.model.Add(dpd_var == dpwg_var)
-                        print(f"  Day {day_str}: Afternoon DPD and DPWG must be same physician")
-            
-            # 5. Monday-Friday: Afternoon DPD must also include DPED
+            # 4. Afternoon DPD combined role assignments
+            # Monday/Wednesday/Friday: DPD + DPED (same physician)
+            # Tuesday/Thursday: DPD + DPED + DPWG (all three to same physician)
             if day_of_week in [0, 1, 2, 3, 4]:  # Monday through Friday
                 for physician in self.input_data.physicians:
                     dpd_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPD.value}"
@@ -314,29 +304,23 @@ class ConstraintBuilder:
                         dpd_var = self.variables[dpd_var_name]
                         dped_var = self.variables[dped_var_name]
                         
-                        # Constraint: If DPD is assigned, DPED must also be assigned (same physician)
+                        # Constraint: DPD and DPED must be assigned to the same physician
                         self.model.Add(dpd_var == dped_var)
-                        print(f"  Day {day_str}: Afternoon DPD and DPED must be same physician")
-            
-            # 6. Tuesday/Thursday: Afternoon DPD + DPWG + DPED must be same physician (triplet)
-            if day_of_week in [1, 3]:  # Tuesday (1) or Thursday (3)
-                for physician in self.input_data.physicians:
-                    dpd_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPD.value}"
-                    dpwg_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPWG.value}"
-                    dped_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPED.value}"
-                    
-                    if (dpd_var_name in self.variables and 
-                        dpwg_var_name in self.variables and 
-                        dped_var_name in self.variables):
                         
-                        dpd_var = self.variables[dpd_var_name]
-                        dpwg_var = self.variables[dpwg_var_name]
-                        dped_var = self.variables[dped_var_name]
-                        
-                        # Constraint: All three roles must be assigned to the same physician
-                        self.model.Add(dpd_var == dpwg_var)
-                        self.model.Add(dpd_var == dped_var)
-                        print(f"  Day {day_str}: Afternoon DPD + DPWG + DPED triplet for same physician")
+                        # For Tuesday/Thursday, also include DPWG in the same physician assignment
+                        if day_of_week in [1, 3]:  # Tuesday (1) or Thursday (3)
+                            dpwg_var_name = f"{physician.name}_{day_str}_{HalfDayPeriod.AFTERNOON.value}_{Role.DPWG.value}"
+                            
+                            if dpwg_var_name in self.variables:
+                                dpwg_var = self.variables[dpwg_var_name]
+                                
+                                # Constraint: DPD, DPED, and DPWG must all be assigned to the same physician
+                                self.model.Add(dpd_var == dpwg_var)
+                                print(f"  Day {day_str}: Afternoon DPD + DPED + DPWG triplet for same physician")
+                            else:
+                                print(f"  Day {day_str}: Afternoon DPD + DPED pair for same physician")
+                        else:
+                            print(f"  Day {day_str}: Afternoon DPD + DPED pair for same physician")
         
         print("Coverage constraints added successfully.")
     
@@ -594,35 +578,290 @@ class ConstraintBuilder:
     
     def create_objective_function(self) -> None:
         """
-        Create the objective function that minimizes preference violations.
+        Create the objective function that minimizes preference violations and unfairness.
         
         This function creates an objective that minimizes the weighted sum of
-        preference penalties, making the solver prefer solutions that satisfy
-        physician preferences.
+        preference penalties and fairness penalties, making the solver prefer solutions
+        that satisfy physician preferences while maintaining fair team distribution.
         """
-        if not hasattr(self, 'preference_penalties') or not self.preference_penalties:
-            print("No preference penalties to minimize.")
-            return
+        print("Creating objective function with preference and fairness penalties...")
         
-        print("Creating objective function with preference penalties...")
-        
-        # Create weighted penalty terms
         weighted_penalties = []
-        for penalty_var, weight in self.preference_penalties:
-            # Scale penalty by weight (0.0 to 1.0)
-            weighted_penalty = penalty_var * int(weight * 100)  # Convert to integer
-            weighted_penalties.append(weighted_penalty)
+        
+        # Add preference penalties
+        if hasattr(self, 'preference_penalties') and self.preference_penalties:
+            for penalty_var, weight in self.preference_penalties:
+                # Scale penalty by weight (0.0 to 1.0)
+                weighted_penalty = penalty_var * int(weight * 100)  # Convert to integer
+                weighted_penalties.append(weighted_penalty)
+            print(f"  Added {len(self.preference_penalties)} preference penalties")
+        
+        # Add fairness penalties
+        if hasattr(self, 'fairness_penalties') and self.fairness_penalties:
+            for penalty_var, weight in self.fairness_penalties:
+                # Scale penalty by weight
+                weighted_penalty = penalty_var * weight
+                weighted_penalties.append(weighted_penalty)
+            print(f"  Added {len(self.fairness_penalties)} fairness penalties")
+        
+        # Add spacing rewards (negative penalties)
+        if hasattr(self, 'spacing_rewards') and self.spacing_rewards:
+            for reward_var in self.spacing_rewards:
+                # Rewards are subtracted from objective (negative penalties)
+                weighted_penalties.append(-reward_var)
+            print(f"  Added {len(self.spacing_rewards)} spacing rewards")
         
         if weighted_penalties:
             # Create objective variable
-            objective = self.model.NewIntVar(0, 1000000, 'objective')
+            objective = self.model.NewIntVar(-1000000, 1000000, 'objective')  # Allow negative values for rewards
             self.model.Add(objective == sum(weighted_penalties))
             self.model.Minimize(objective)
             
-            print(f"  Created objective function with {len(weighted_penalties)} preference penalties")
-            print(f"  Total penalty terms: {len(self.preference_penalties)}")
+            print(f"  Created objective function with {len(weighted_penalties)} total terms (penalties and rewards)")
         else:
-            print("  No preference penalties to minimize")
+            print("  No penalties or rewards to minimize")
+    
+    def add_fairness_constraints(self) -> None:
+        """
+        Add constraints for fair distribution of work based on FTE.
+        
+        This constraint ensures that assignments are distributed fairly across
+        physicians according to their FTE percentages, similar to how annual
+        targets work but with more flexibility for the solver.
+        
+        The fairness constraint works with soft preferences - it can override
+        individual preferences if it creates a more equitable team distribution.
+        """
+        print("Adding fairness constraints...")
+        
+        # Store fairness penalties for objective function
+        self.fairness_penalties = []
+        
+        # Calculate total FTE across all physicians
+        total_fte = sum(physician.fte_percentage for physician in self.input_data.physicians)
+        
+        for role in self.input_data.roles:
+            # Skip vacation, trip, and SDO roles for fairness (these are handled separately)
+            if role in [Role.VACATION, Role.TRIP, Role.SDO]:
+                continue
+                
+            print(f"  Role {role.value}:")
+            
+            # Calculate FTE-proportional fair shares for this role
+            fair_shares = {}
+            total_role_target = 0
+            
+            for physician in self.input_data.physicians:
+                # Get annual target for this role
+                annual_target = self._get_annual_target_for_role(physician, role)
+                total_role_target += annual_target
+                
+                # Calculate fair share based on FTE
+                fair_share = (annual_target * physician.fte_percentage) / total_fte
+                fair_shares[physician.name] = fair_share
+            
+            if total_role_target > 0:
+                # Create variables for actual assignments and deviations
+                for physician in self.input_data.physicians:
+                    # Create variable for actual assignments to this role
+                    actual_assignments = []
+                    for day in self.input_data.calendar_days:
+                        day_str = day.strftime('%Y-%m-%d')
+                        for period in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON]:
+                            var_name = f"{physician.name}_{day_str}_{period.value}_{role.value}"
+                            if var_name in self.variables:
+                                actual_assignments.append(self.variables[var_name])
+                    
+                    if actual_assignments:
+                        # Create deviation variable (can be positive or negative)
+                        deviation_var_name = f"{physician.name}_{role.value}_fairness_deviation"
+                        max_deviation = int(total_role_target * 2)  # Allow for significant deviation
+                        deviation_var = self.model.NewIntVar(-max_deviation, max_deviation, deviation_var_name)
+                        
+                        # Constraint: deviation = actual_assignments - fair_share
+                        # Convert fair share to integer (multiply by 2 since we're working with half-days)
+                        fair_share_int = int(fair_shares[physician.name] * 2)
+                        self.model.Add(deviation_var == sum(actual_assignments) - fair_share_int)
+                        
+                        # Create absolute deviation penalty (always positive)
+                        penalty_var_name = f"{physician.name}_{role.value}_fairness_penalty"
+                        penalty_var = self.model.NewIntVar(0, max_deviation, penalty_var_name)
+                        
+                        # Constraint: penalty = |deviation|
+                        self.model.Add(penalty_var >= deviation_var)
+                        self.model.Add(penalty_var >= -deviation_var)
+                        
+                        # Store penalty with weight for objective function
+                        fairness_weight = 5  # Adjust this weight relative to preference weights
+                        self.fairness_penalties.append((penalty_var, fairness_weight))
+                        
+                        print(f"    {physician.name} (FTE {physician.fte_percentage}): "
+                              f"Fair share {fair_shares[physician.name]:.1f} assignments")
+        
+        print("Fairness constraints added successfully.")
+    
+    def add_temporal_spacing_constraints(self) -> None:
+        """
+        Add constraints for temporal spacing of role assignments.
+        
+        This constraint maximizes the distance between consecutive assignments
+        of the same role for each physician, ensuring variety and avoiding
+        repetitive work patterns.
+        
+        The constraint creates rewards (negative penalties) for spreading out
+        assignments over time, encouraging the solver to distribute roles
+        evenly across the schedule horizon.
+        """
+        print("Adding temporal spacing constraints...")
+        
+        # Store spacing rewards for objective function
+        self.spacing_rewards = []
+        
+        # Configurable weight for spacing importance
+        spacing_weight = 5  # Adjust this weight relative to other constraints
+        
+        for physician in self.input_data.physicians:
+            print(f"  Physician {physician.name}:")
+            
+            for role in self.input_data.roles:
+                # Skip vacation, trip, and SDO roles for spacing
+                if role in [Role.VACATION, Role.TRIP, Role.SDO]:
+                    continue
+                
+                # Get all assignment variables for this role and physician
+                role_assignments = []
+                assignment_days = []
+                
+                for i, day in enumerate(self.input_data.calendar_days):
+                    day_str = day.strftime('%Y-%m-%d')
+                    for period in [HalfDayPeriod.MORNING, HalfDayPeriod.AFTERNOON]:
+                        var_name = f"{physician.name}_{day_str}_{period.value}_{role.value}"
+                        if var_name in self.variables:
+                            role_assignments.append(self.variables[var_name])
+                            assignment_days.append(i)  # Store day index
+                
+                if len(role_assignments) > 1:
+                    # Calculate role weight (1 for single roles, 2+ for combined roles)
+                    role_weight = self._get_role_weight(role)
+                    
+                    # Create variables to track minimum distance between consecutive assignments
+                    min_distance_var_name = f"{physician.name}_{role.value}_min_distance"
+                    max_possible_distance = len(self.input_data.calendar_days)
+                    min_distance_var = self.model.NewIntVar(0, max_possible_distance, min_distance_var_name)
+                    
+                    # Create constraints to find minimum distance between consecutive assignments
+                    consecutive_distances = []
+                    
+                    for i in range(len(assignment_days) - 1):
+                        for j in range(i + 1, len(assignment_days)):
+                            distance = assignment_days[j] - assignment_days[i]
+                            
+                            # Create a binary variable to indicate if both assignments are active
+                            both_active_var_name = f"{physician.name}_{role.value}_both_active_{i}_{j}"
+                            both_active_var = self.model.NewBoolVar(both_active_var_name)
+                            
+                            # Constraint: both_active = 1 if both assignments are active
+                            self.model.Add(both_active_var <= role_assignments[i])
+                            self.model.Add(both_active_var <= role_assignments[j])
+                            self.model.Add(both_active_var >= role_assignments[i] + role_assignments[j] - 1)
+                            
+                            # Create distance variable for this pair
+                            distance_var_name = f"{physician.name}_{role.value}_distance_{i}_{j}"
+                            distance_var = self.model.NewIntVar(0, max_possible_distance, distance_var_name)
+                            
+                            # Constraint: distance_var = distance if both active, otherwise max_distance
+                            self.model.Add(distance_var >= distance - max_possible_distance * (1 - both_active_var))
+                            self.model.Add(distance_var <= distance + max_possible_distance * (1 - both_active_var))
+                            self.model.Add(distance_var <= max_possible_distance)
+                            
+                            consecutive_distances.append(distance_var)
+                    
+                    if consecutive_distances:
+                        # Constraint: min_distance_var <= all consecutive distances
+                        for distance_var in consecutive_distances:
+                            self.model.Add(min_distance_var <= distance_var)
+                        
+                        # Create reward based on minimum distance (weighted by role weight)
+                        reward_var_name = f"{physician.name}_{role.value}_spacing_reward"
+                        max_reward = max_possible_distance * role_weight * spacing_weight
+                        reward_var = self.model.NewIntVar(0, max_reward, reward_var_name)
+                        
+                        # Constraint: reward = min_distance * role_weight * spacing_weight
+                        self.model.Add(reward_var == min_distance_var * role_weight * spacing_weight)
+                        
+                        # Store reward (will be subtracted from objective function)
+                        self.spacing_rewards.append(reward_var)
+                        
+                        print(f"    {role.value} (weight {role_weight}): Maximizing minimum distance between assignments")
+        
+        print("Temporal spacing constraints added successfully.")
+    
+    def _get_role_weight(self, role: Role) -> int:
+        """
+        Get the weight for a specific role based on its importance.
+        
+        Args:
+            role: The role to get the weight for
+        
+        Returns:
+            Role weight (integer)
+        """
+        # Define role weights based on importance
+        # Weight 3: Only for DPD+DPED+DPWG (triplet assignments)
+        # Weight 2: Only for DPD+DPED (pair assignments)
+        # Weight 1: Everything else
+        role_weights = {
+            Role.DP: 1,      # Core pathology work
+            Role.DPD: 1,     # Person of day (weight handled in coverage constraints)
+            Role.IMF: 1,     # Immuno dermatology
+            Role.OSD: 1,     # Outpatient service
+            Role.ADMIN: 1,   # Administrative
+            Role.RESEARCH: 1, # Research
+            Role.DPWG: 1,    # Working group (weight handled in coverage constraints)
+            Role.DPED: 1,    # Education (weight handled in coverage constraints)
+            Role.EDUCATION: 1, # Education
+            Role.NVC: 1,     # Non-visit care
+        }
+        
+        return role_weights.get(role, 1)  # Default weight of 1
+    
+    def _get_annual_target_for_role(self, physician: Physician, role: Role) -> float:
+        """
+        Get the annual target for a specific role for a physician.
+        
+        Args:
+            physician: The physician
+            role: The role to get target for
+            
+        Returns:
+            Annual target in half-day units
+        """
+        if role == Role.OSD:
+            return physician.total_number_of_osd_days_per_year * 2
+        elif role == Role.NVC:
+            return physician.total_number_of_nvc_days_per_year * 2
+        elif role == Role.ADMIN:
+            return physician.total_number_of_admin_days_per_year * 2
+        elif role == Role.SDO:
+            return physician.total_number_of_sdo_days_per_year * 2
+        elif role == Role.VACATION:
+            return physician.total_number_of_vacation_days_per_year * 2
+        elif role == Role.TRIP:
+            return 18 * 2  # 18 days maximum
+        else:
+            # For pathology and clinical roles, calculate based on category targets
+            if role in Role.get_roles_by_category(RoleCategory.PATHOLOGY):
+                return physician.total_number_of_pathology_days_per_year * 2
+            elif role in Role.get_roles_by_category(RoleCategory.CLINICAL):
+                return physician.total_number_of_clinical_days_per_year * 2
+            else:
+                # Default: distribute remaining work days proportionally
+                work_roles = [r for r in self.input_data.roles 
+                             if r not in [Role.VACATION, Role.TRIP, Role.SDO]]
+                total_work_target = physician.total_number_of_days_per_year * 2
+                return total_work_target / len(work_roles)
+    
+
     
     def add_role_category_constraints(self) -> None:
         """
@@ -705,16 +944,14 @@ class ConstraintBuilder:
         
         self.add_one_role_per_day_constraints()
         self.add_unavailability_constraints()
-        self.add_sdo_constraints()
+        #self.add_sdo_constraints()
         self.add_coverage_constraints()
         self.add_annual_target_constraints()
-        self.add_role_requirement_constraints()
-        self.add_role_preference_constraints()
-        self.create_objective_function() # Call the new method here
-        self.add_role_category_constraints()
-        self.add_workload_balancing_constraints()
-        self.add_consecutive_day_constraints()
-        self.add_preference_constraints()
+        #self.add_role_requirement_constraints()
+        #self.add_role_preference_constraints()
+        #self.add_fairness_constraints()
+        # Temporarily disable temporal spacing to debug the basic_string error
+        # self.add_temporal_spacing_constraints()
         
         print("All constraints added successfully.")
 
